@@ -1,358 +1,423 @@
 # Revenue Intelligence POC
 
-這是一個以 Excel 營收與庫存資料為核心的分析與問答 POC。專案會讀取 `data/` 內的三份工作簿，清理欄位、解析匿名化 mapping、建立跨資料集分析表，輸出 Excel、Markdown 報告與圖表，並提供 multi-agent 問答 API 與 Next.js 前端介面。
+This is an analysis proof of concept built around Excel-based revenue and inventory data. The project reads local Excel files, normalizes the data into analysis dimensions such as month, business group, and five major product lines, and provides querying, charting, and demo interfaces through a deterministic tool layer, multi-agent Q&A, a Python API, and a Next.js UI.
 
-目前專案重點是「可追溯的商業分析」：回答會保留資料範圍、工具證據、限制說明與前端可呈現的 display blocks，避免把背景資訊或不充分證據包裝成確定結論。
+The current main workflow is the `real data` analysis path, which uses local files such as `data/inventory.xlsx` and `data/revenue.xlsx` to build the analysis context. The legacy offline reporting workflow still exists, but it requires an additional `data/mapping.xlsx` file.
 
-## 功能總覽
+> Note: The `data/` directory may be excluded from the public repository because it can contain internal or confidential source data.
 
-- 讀取營收、庫存、mapping 三份 Excel 檔案
-- 將 `YYYYMM`、日期欄位等資料格式標準化
-- 解析匿名化 business group、HQBU、platform 對應關係
-- 建立月度趨勢、平台比較、庫存金額、庫存數量、營收/庫存 proxy 等分析資料
-- 產出清理後 Excel、彙總 Excel、Markdown 報告與 PNG 圖表
-- 提供 deterministic multi-agent 問答流程
-- 可選擇接入 Ollama，啟用 LLM planner / rewriter
-- 提供 Python HTTP API 給前端代理呼叫
-- 提供 Next.js 桌面 dashboard 與 mobile executive demo 路由
-- 內建 regression tests、demo smoke、planner eval 與 live LLM smoke 腳本
+## Project Capabilities
 
-## 專案結構
+- Read real inventory and revenue Excel data
+- Normalize month values into `YYYY-MM`
+- Analyze entities by `business_group` and `product_line_5`
+- Generate monthly revenue, inventory amount, inventory quantity, rankings, anomaly checks, and proxy ratio analysis
+- Use `MultiAgentAssistant` to answer questions about sales, inventory, financial proxies, charts, and data quality
+- Provide a Python HTTP API for frontend proxy calls
+- Provide a Next.js dashboard and mobile demo route
+- Optionally connect to Ollama as an LLM planner / rewriter, while keeping deterministic fallback enabled by default
+
+## Project Structure
 
 ```text
 .
-├─ data/                 # 輸入資料：inventory.xlsx、revenue.xlsx、mapping.xlsx
-├─ output/               # 分析輸出與 logs；執行流程後產生或更新
-│  └─ charts/            # 圖表 PNG
-├─ frontend/             # 主要 Next.js app
-│  ├─ app/dashboard/     # 桌面分析工作台
-│  ├─ app/mobile/        # 行動版 executive demo
-│  ├─ app/api/           # Next.js proxy routes
-│  ├─ components/        # shared charts、chat、KPI components
-│  └─ lib/python-api.js  # Python API client
-├─ scripts/              # 啟動、smoke test、eval 腳本
-├─ tests/                # pytest 測試
-├─ eval/                 # 評測資料與輸出報告
-├─ docs/                 # 架構、API、前端整併與 response logic 文件
-├─ main.py               # 離線分析與 CLI 入口
-├─ demo_web.py           # Python HTTP API 入口
-├─ multi_agent.py        # multi-agent 問答主流程
-├─ analysis_tools.py     # 分析工具箱與圖表/觀測資料查詢
-├─ answer_contract.py    # 回答契約與前端 display blocks
-├─ evidence_projector.py # evidence 到 executive display 的投影邏輯
-└─ pyproject.toml        # Python 依賴定義
+├── data/                         # Local Excel source files, usually not committed
+├── docs/                         # Design, API, demo, and LLM runbooks
+├── eval/                         # Regression / evaluation outputs
+├── frontend/                     # Next.js UI
+├── scripts/                      # Backend/frontend startup and smoke scripts
+├── tests/                        # unittest test suite
+├── analysis_pipeline.py          # Builds PipelineContext
+├── analysis_tools.py             # Deterministic analysis tools
+├── demo_web.py                   # Python API server, port 8765
+├── main.py                       # Legacy report CLI + agent CLI compatibility
+├── multi_agent.py                # Multi-agent orchestration
+├── real_data.py                  # Real inventory/revenue normalization
+├── pyproject.toml                # Python dependency source of truth
+└── requirements.txt              # pip fallback dependency list
 ```
 
-## 環境需求
+## Data Files
 
-- Python `3.12`
-- `uv`，建議使用
-- Node.js LTS 與 npm，用於 `frontend/`
-- 可選：Ollama，用於 live LLM planner / rewriter
+The project expects the following local files:
 
-`pyproject.toml` 是 Python 依賴的主要來源；`requirements.txt` 保留作為相容安裝方式。
+- `data/inventory.xlsx`
+  - Main sheet: `工作表1`
+  - Columns include `Wn日期`, `年`, `月`, `HQBU`, `typename`, `金額`, `QTY`, `Productline_5`, `五大產品線`, `新事業群`
 
-## 快速開始
+- `data/revenue.xlsx`
+  - Main sheet: `工作表1`
+  - Columns include `公司類別`, `年度`, `月份`, `合併事業群`, `產品類別名稱`, `實際營收`, `五大產品線`, `新事業群`
 
-### 1. 安裝 Python 依賴
+`real_data.py` converts the raw columns into standardized fields.
 
-建議使用 `uv`：
+Inventory standardized fields:
+
+```text
+month_key
+year
+month
+hqbu
+inventory_type
+inventory_amount
+inventory_qty
+productline_raw
+product_line_5
+business_group
+```
+
+Revenue standardized fields:
+
+```text
+month_key
+year
+month
+company_type
+merged_business_group
+product_category_name
+revenue_amount
+product_line_5
+business_group
+```
+
+The analysis join key is:
+
+```text
+month_key + business_group + product_line_5
+```
+
+Note: `data/mapping.xlsx` is not required for the real-data assistant path. `demo_web.py`, `agent_cli.py`, and `main.py --question` use the real-data assistant path and do not require the mapping file.
+
+However, directly running `python main.py` will trigger the legacy offline reporting workflow, which still looks for `mapping.xlsx`.
+
+## Environment Requirements
+
+- Python 3.12
+- Node.js LTS + npm, for `frontend/`
+- Optional: `uv`
+- Optional: Ollama, for live LLM planner / rewriter
+
+`pyproject.toml` specifies:
+
+```text
+requires-python = ">=3.12,<3.13"
+```
+
+Main Python packages:
+
+- `pandas`
+- `openpyxl`
+- `matplotlib`
+- `requests`
+
+## Installation
+
+Using `uv` is recommended:
 
 ```powershell
 uv venv --python 3.12
 uv sync
 ```
 
-或使用一般 venv：
+If `uv` is not available, use a standard virtual environment:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 2. 執行離線分析流程
+Install frontend dependencies:
 
 ```powershell
-uv run python main.py
+cd frontend
+npm install
 ```
 
-此流程會讀取：
+## Common Startup Commands
 
-- `data/inventory.xlsx`
-- `data/revenue.xlsx`
-- `data/mapping.xlsx`
-
-並更新 `output/` 內的分析產物。
-
-如需重建測試資料：
+### 1. Start the Python API
 
 ```powershell
-uv run python main.py --generate-test-data
+python demo_web.py
 ```
 
-### 3. 啟動 Python API
-
-```powershell
-uv run python demo_web.py
-```
-
-預設 API 位址：
+The API will be available at:
 
 ```text
 http://127.0.0.1:8765
 ```
 
-### 4. 啟動前端
+### 2. Start the Next.js Dashboard
 
-另開一個 PowerShell：
+Open another PowerShell window:
 
 ```powershell
 cd frontend
-npm install
 $env:PYTHON_API_BASE="http://127.0.0.1:8765"
-npm run dev -- --hostname 127.0.0.1 --port 3000
+npm run dev
 ```
 
-前端入口：
+Open:
 
-- Dashboard: `http://127.0.0.1:3000/dashboard`
-- Mobile demo: `http://127.0.0.1:3000/mobile`
-- Root `/` 會自動導向 `/dashboard`
+```text
+http://127.0.0.1:3000/dashboard
+http://127.0.0.1:3000/mobile
+```
 
-也可以使用腳本啟動後端或前端：
+### 3. Start with Scripts
 
 ```powershell
 .\scripts\start_backend.ps1
 .\scripts\start_frontend.ps1
 ```
 
-## CLI 使用方式
-
-執行完整分析：
+Or start the backend, desktop UI, and mobile UI together:
 
 ```powershell
-uv run python main.py
+.\scripts\start_all.ps1
 ```
 
-分析後進入終端問答模式：
+`start_all.ps1` expects the services to run at:
+
+- API: `http://127.0.0.1:8765`
+- Web UI: `http://127.0.0.1:3000`
+- Mobile UI: `http://127.0.0.1:3001`
+
+## CLI Usage
+
+Generate a multi-agent project summary:
 
 ```powershell
-uv run python main.py --chat
+python main.py --project-summary
 ```
 
-輸出 multi-agent 專案摘要：
+Ask a single question:
 
 ```powershell
-uv run python main.py --project-summary
+python main.py --question "What months are covered by the current dataset?"
 ```
 
-詢問單一問題：
+Output full JSON:
 
 ```powershell
-uv run python main.py --question "summarize current project capability"
+python main.py --question "How is the current data quality?" --agent-json
 ```
 
-輸出完整 JSON 回答：
+You can also use the agent CLI directly:
 
 ```powershell
-uv run python main.py --question "which platform has the weakest revenue inventory proxy?" --agent-json
+python agent_cli.py --project-summary
+python agent_cli.py --question "Compare the latest monthly revenue performance by business group" --json
 ```
 
-也可以使用獨立 assistant CLI：
+Legacy reporting workflow:
 
 ```powershell
-uv run python agent_cli.py --project-summary
-uv run python agent_cli.py --question "summarize current project capability" --json
+python main.py
 ```
 
-## API 端點
+This path reads `data/inventory.xlsx`, `data/revenue.xlsx`, and `data/mapping.xlsx`, then writes outputs to `output/`.
 
-`demo_web.py` 使用 Python 標準庫 `ThreadingHTTPServer` 啟動 API。主要端點如下：
+If you want to run the legacy report, provide the mapping file first or use the test data generator.
 
-| Method | Path | 說明 |
-|---|---|---|
-| `GET` | `/` | API 服務資訊與端點清單 |
-| `GET` | `/api/health` | API、pipeline、資料狀態摘要 |
-| `GET` | `/api/data-version` | 資料版本、月份範圍、row counts |
-| `GET` | `/api/pipeline-status` | pipeline infos / warnings / errors |
-| `GET` | `/api/data-quality` | 資料品質、mapping 狀態、限制說明 |
-| `GET` | `/api/summary` | 專案與資料摘要 |
-| `GET` | `/api/chart-catalog` | 可用圖表清單 |
-| `GET` | `/api/observe-options` | 可查詢維度與篩選選項 |
-| `POST` | `/api/ask` | multi-agent 問答 |
-| `POST` | `/api/chart` | 取得圖表 payload 與可選圖像 |
-| `POST` | `/api/observe` | 取得觀測資料表 |
-
-`/api/ask` 範例：
+Generate test data:
 
 ```powershell
-$body = @{
-  question = "which platform has the weakest revenue inventory proxy?"
-  use_llm_planner = $false
-  use_llm_rewriter = $false
-} | ConvertTo-Json
+python main.py --generate-test-data
+```
 
+Warning: this will overwrite `data/inventory.xlsx` and `data/revenue.xlsx`, and it will also create `data/mapping.xlsx`. If you want to keep the current real data, back up the `data/` directory first.
+
+## API
+
+`demo_web.py` provides the following endpoints:
+
+- `GET /api/health`
+- `GET /api/data-version`
+- `GET /api/pipeline-status`
+- `GET /api/data-quality`
+- `GET /api/summary`
+- `GET /api/chart-catalog`
+- `GET /api/observe-options`
+- `POST /api/ask`
+- `POST /api/chart`
+- `POST /api/observe`
+
+Example:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8765/api/health
+```
+
+```powershell
 Invoke-RestMethod `
   -Method Post `
-  -Uri "http://127.0.0.1:8765/api/ask" `
+  -Uri http://127.0.0.1:8765/api/ask `
   -ContentType "application/json; charset=utf-8" `
-  -Body $body
+  -Body '{"question":"What months are covered by the current dataset?"}'
 ```
 
-## 前端
+The Next.js frontend proxies requests to the Python API through `frontend/app/api/*`.
 
-`frontend/` 是目前主要前端 app。Next.js routes：
+The default Python API base is:
 
-- `/dashboard`：桌面分析工作台
-- `/mobile`：行動版 executive demo
-- `/api/*`：代理 Python API 的 shared routes
+```text
+http://127.0.0.1:8765
+```
 
-前端 proxy 預設連到 `http://127.0.0.1:8765`，可用 `PYTHON_API_BASE` 覆寫。
-
-常用命令：
+It can be overridden with an environment variable:
 
 ```powershell
-cd frontend
-npm install
-npm run dev
-npm run build
-npm run start
+$env:PYTHON_API_BASE="http://127.0.0.1:8765"
 ```
 
-## 輸出檔案
+## LLM / Ollama
 
-執行 `main.py` 或建立 pipeline context 後，主要輸出會放在 `output/`：
+The LLM planner and rewriter are disabled by default:
 
-- `output/cleaned_inventory.xlsx`
-- `output/cleaned_revenue.xlsx`
-- `output/parsed_mapping.xlsx`
-- `output/merged_analysis.xlsx`
-- `output/summary_metrics.xlsx`
-- `output/analysis_report.md`
-- `output/llm_explanation.md`
-- `output/qa_transcript.md`，使用 `--chat` 時產生
-- `output/charts/*.png`
-- `output/logs/`，API、CLI、eval 等流程的 logs
+```powershell
+$env:USE_LLM_PLANNER="false"
+$env:USE_LLM_REWRITER="false"
+```
 
-## Ollama 與 LLM 選配
+Even if Ollama is not available, the system will continue to use deterministic fallback.
 
-專案可以在沒有 LLM 的情況下用 deterministic 規則回答。若要測試 live LLM planner / rewriter，可先啟動 Ollama 並拉取模型。
-
-目前程式設定位於 `config.py`：
-
-- Base URL: `http://localhost:11434`
-- Model: `gemma4:e4b`
-- Timeout: `90` 秒
-
-啟動 Ollama：
+To test live LLM mode:
 
 ```powershell
 ollama serve
 ollama pull gemma4:e4b
 ```
 
-啟動 Python API 時可用環境變數控制：
+You can configure:
+
+```powershell
+$env:OLLAMA_BASE_URL="http://localhost:11434"
+$env:OLLAMA_MODEL="gemma4:e4b"
+$env:OLLAMA_TIMEOUT_SECONDS="90"
+```
+
+Planner-only rehearsal:
 
 ```powershell
 $env:USE_LLM_PLANNER="true"
-$env:USE_LLM_REWRITER="true"
-uv run python demo_web.py
+$env:USE_LLM_REWRITER="false"
 ```
 
-若 Ollama 不可用，建議保留 `use_llm_planner=false`、`use_llm_rewriter=false`，讓 demo 使用 deterministic path。
+For details, see:
 
-## 測試與驗證
+```text
+docs/llm_enablement_runbook.md
+```
 
-執行 pytest：
+## Testing and Validation
+
+Run the full Python unittest suite:
 
 ```powershell
-uv run pytest
+python -m unittest discover -s tests -v
 ```
 
-執行 deterministic eval：
+Run deterministic demo smoke:
 
 ```powershell
-uv run python eval/run_eval.py
+python scripts\demo_smoke.py
 ```
 
-執行 demo smoke，直接呼叫 assistant：
+Run smoke tests against a running API:
 
 ```powershell
-uv run python scripts/demo_smoke.py
+python scripts\demo_smoke.py --api-url http://127.0.0.1:8765
 ```
 
-執行 demo smoke，透過 API：
+Run LLM availability smoke:
 
 ```powershell
-uv run python scripts/demo_smoke.py --api-url http://127.0.0.1:8765
+python scripts\smoke_llm_live.py
 ```
 
-測試 LLM planner：
-
-```powershell
-uv run python scripts/eval_llm_planner.py --mock
-```
-
-Live LLM smoke：
-
-```powershell
-uv run python scripts/smoke_llm_live.py --live
-```
-
-前端 production build：
+Run a production-like frontend check:
 
 ```powershell
 cd frontend
+$env:PYTHON_API_BASE="http://127.0.0.1:8765"
 npm run build
+npm run start
 ```
 
-## 重要設計概念
+## Outputs
 
-- `analysis_pipeline.py` 建立共享 pipeline context，供 CLI、API、tests 使用。
-- `analysis_tools.py` 封裝可被 assistant 使用的 deterministic 分析工具。
-- `business_question_classifier.py`、`task_profile.py`、`answer_plan.py` 負責問題分類與回答規劃。
-- `analysis_rubrics.py` 將 evidence 分成 primary、supporting、background、debug。
-- `evidence_projector.py` 只把合適的 primary / supporting evidence 投影到前端 display blocks。
-- `answer_contract.py` 維持前後端穩定契約，保留 answer、evidence、limitations、tools_used、display_blocks 等欄位。
-- `frontend/components/chat/` 會讀取 API 回答中的 chart evidence 與 display blocks，更新對話與圖表狀態。
+The Python pipeline and smoke scripts generate local outputs such as:
 
-## 開發注意事項
+- `output/`
+- `output/logs/`
+- `output/charts/`
+- `eval/*.csv`
+- `eval/*.md`
 
-- 新增 Python 依賴時，優先更新 `pyproject.toml`。
-- 新前端功能應放在 `frontend/`；`/dashboard` 與 `/mobile` 是目前主要入口。
-- 回答邏輯應優先使用 deterministic evidence，不應讓 LLM 直接決定商業結論。
-- 若修改 `/api/ask` 回傳格式，請同步檢查 frontend display、tests 與 eval。
-- `output/` 是產物目錄，內容可重新產生。
+These are mostly local execution artifacts and should not be treated as the source of truth.
 
-## 常見問題
+## FAQ
 
-### API 啟動後前端仍無法取得資料
+### `uv` is not found
 
-確認 Python API 正在 `http://127.0.0.1:8765`，且前端環境變數有正確設定：
+You can use `py -3.12 -m venv .venv` and `pip install -r requirements.txt` instead.
+
+`uv` is recommended, but it is not the only installation option.
+
+### `python main.py` says mapping is missing
+
+This is the legacy offline reporting workflow.
+
+If you only want to use the current real-data assistant, API, or UI, run:
+
+```powershell
+python demo_web.py
+python main.py --project-summary
+python main.py --question "How is the current data quality?"
+```
+
+If you specifically want to run the legacy report, provide `data/mapping.xlsx` or run:
+
+```powershell
+python main.py --generate-test-data
+```
+
+### Frontend `/api/*` requests fail
+
+Make sure the Python API is running and that the frontend environment variable points to the correct location:
 
 ```powershell
 $env:PYTHON_API_BASE="http://127.0.0.1:8765"
 ```
 
-### 問答結果沒有使用 LLM
+### Chinese text becomes garbled in the terminal or logs
 
-這是預期行為。預設路徑是 deterministic，只有在 API payload 或環境變數啟用 LLM planner / rewriter 時才會嘗試呼叫 Ollama。
+Use a terminal that supports UTF-8, or enter Chinese questions through the frontend UI.
 
-### 中文輸出看起來亂碼
+Some older documents and legacy display strings may contain historical encoding issues. This README is based on the currently verifiable program flow and data contract.
 
-請確認終端機與編輯器使用 UTF-8。PowerShell 可先執行：
+## Important Documents
 
-```powershell
-chcp 65001
+- `docs/real_data_contract.md`
+- `docs/pipeline_architecture.md`
+- `docs/api_status_endpoints.md`
+- `docs/demo_checklist.md`
+- `docs/llm_enablement_runbook.md`
+- `frontend/README.md`
+
+## Data Security Note
+
+This project may use internal revenue and inventory data during local development.
+
+Do not commit confidential Excel files, raw exports, or generated reports to a public repository. Recommended `.gitignore` rules:
+
+```gitignore
+data/
+*.xlsx
+*.csv
+output/
+eval/
 ```
-
-### 圖表或報告沒有更新
-
-重新執行：
-
-```powershell
-uv run python main.py
-```
-
-如果輸入 Excel schema 有變動，請先檢查 `data/` 內的欄位是否仍符合 `config.py` 的欄位契約。

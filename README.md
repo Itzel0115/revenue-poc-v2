@@ -2,13 +2,10 @@
 
 This is an analysis proof of concept built around Excel-based revenue and inventory data. The project reads local Excel files, normalizes the data into analysis dimensions such as month, business group, and five major product lines, and provides querying, charting, and demo interfaces through a deterministic tool layer, multi-agent Q&A, a Python API, and a Next.js UI.
 
-The current main workflow is the `real data` analysis path, which uses local files such as `data/inventory.xlsx` and `data/revenue.xlsx` to build the analysis context. The legacy offline reporting workflow still exists, but it requires an additional `data/mapping.xlsx` file.
-
-> Note: The `data/` directory may be excluded from the public repository because it can contain internal or confidential source data.
 
 ## Project Capabilities
 
-- Read real inventory and revenue Excel data
+- Read inventory and revenue Excel data
 - Normalize month values into `YYYY-MM`
 - Analyze entities by `business_group` and `product_line_5`
 - Generate monthly revenue, inventory amount, inventory quantity, rankings, anomaly checks, and proxy ratio analysis
@@ -21,7 +18,7 @@ The current main workflow is the `real data` analysis path, which uses local fil
 
 ```text
 .
-├── data/                         # Local Excel source files, usually not committed
+├── data/                         # Local Excel source files
 ├── docs/                         # Design, API, demo, and LLM runbooks
 ├── eval/                         # Regression / evaluation outputs
 ├── frontend/                     # Next.js UI
@@ -42,11 +39,9 @@ The current main workflow is the `real data` analysis path, which uses local fil
 The project expects the following local files:
 
 - `data/inventory.xlsx`
-  - Main sheet: `工作表1`
   - Columns include `Wn日期`, `年`, `月`, `HQBU`, `typename`, `金額`, `QTY`, `Productline_5`, `五大產品線`, `新事業群`
 
 - `data/revenue.xlsx`
-  - Main sheet: `工作表1`
   - Columns include `公司類別`, `年度`, `月份`, `合併事業群`, `產品類別名稱`, `實際營收`, `五大產品線`, `新事業群`
 
 `real_data.py` converts the raw columns into standardized fields.
@@ -85,10 +80,6 @@ The analysis join key is:
 ```text
 month_key + business_group + product_line_5
 ```
-
-Note: `data/mapping.xlsx` is not required for the real-data assistant path. `demo_web.py`, `agent_cli.py`, and `main.py --question` use the real-data assistant path and do not require the mapping file.
-
-However, directly running `python main.py` will trigger the legacy offline reporting workflow, which still looks for `mapping.xlsx`.
 
 ## Environment Requirements
 
@@ -218,7 +209,7 @@ Legacy reporting workflow:
 python main.py
 ```
 
-This path reads `data/inventory.xlsx`, `data/revenue.xlsx`, and `data/mapping.xlsx`, then writes outputs to `output/`.
+This path reads `data/inventory.xlsx`, `data/revenue.xlsx`, then writes outputs to `output/`.
 
 If you want to run the legacy report, provide the mapping file first or use the test data generator.
 
@@ -227,8 +218,6 @@ Generate test data:
 ```powershell
 python main.py --generate-test-data
 ```
-
-Warning: this will overwrite `data/inventory.xlsx` and `data/revenue.xlsx`, and it will also create `data/mapping.xlsx`. If you want to keep the current real data, back up the `data/` directory first.
 
 ## API
 
@@ -377,12 +366,6 @@ If you only want to use the current real-data assistant, API, or UI, run:
 python demo_web.py
 python main.py --project-summary
 python main.py --question "How is the current data quality?"
-```
-
-If you specifically want to run the legacy report, provide `data/mapping.xlsx` or run:
-
-```powershell
-python main.py --generate-test-data
 ```
 
 ### Frontend `/api/*` requests fail
